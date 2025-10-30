@@ -1,0 +1,20 @@
+# Flutter/Dart/Pub related
+.dart_tool/
+.packages
+.pub-cache/
+/build/
+.idea/
+.gradle/
+android/
+ios/
+web/
+windows/
+linux/
+macos/
+**/Generated.xcconfig
+**/Flutter.framework
+**/Flutter.podspec
+**/.swift-version
+**/Pods/
+**/Podfile.lock
+**/pubspec.lock
