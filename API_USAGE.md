@@ -65,7 +65,6 @@ Example response:
     "..."
   ],
   "recommendation_markdown": "...",
-  "recommendation": "...",
   "filename": "leaf.jpg"
 }
 ```
@@ -73,9 +72,7 @@ Example response:
 The `probabilities` array lists all known classes, sorted by likelihood in
 descending order. `recommendation_markdown` contains the mitigation advice
 pulled from `recommendation_vi.py` for the predicted disease. Client
-applications can render it directly (it uses Markdown formatting). A
-`recommendation` field is also provided as a plain-text alias so existing
-consumers expecting that key continue to work.
+applications can render it directly (it uses Markdown formatting).
 
 ## 4. Deployment considerations
 

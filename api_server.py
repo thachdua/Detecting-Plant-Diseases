@@ -95,9 +95,7 @@ def predict(image_array: np.ndarray) -> dict:
         "label": label,
         "confidence": confidence,
         "probabilities": probabilities,
-        # Provide both Markdown (rich text) and plain text alias for convenience
         "recommendation_markdown": recommendation,
-        "recommendation": recommendation,
     }
 
 
