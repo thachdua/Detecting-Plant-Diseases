@@ -1,4 +1,4 @@
-tensorflow==2.17.0
+tensorflow==2.20.0
 # TensorFlow already bundles a compatible Keras version.
 # Installing keras separately can lead to version conflicts on deployment platforms.
 protobuf==4.25.3
