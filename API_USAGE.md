@@ -5,10 +5,8 @@ plant disease detection model and how client applications can interact with it.
 
 ## 1. Environment setup
 
-1. Create or activate a Python 3.9–3.12 virtual environment. The dependency
-   file pins TensorFlow conditionally: Python 3.9–3.11 installs 2.17.0 while
-   Python 3.12 installs 2.20.0. TensorFlow chưa hỗ trợ Python 3.13, vì vậy hãy
-   chắc chắn môi trường của bạn không vượt quá 3.12.
+1. Create or activate a Python 3.9+ virtual environment (TensorFlow 2.17
+   currently ships wheels for CPython 3.9–3.11 only).
 2. Install the dependencies:
 
    ```bash
@@ -21,11 +19,10 @@ plant disease detection model and how client applications can interact with it.
 > on demand when handling predictions.
 
 > **Render tip**
-> Trước khi deploy, vào tab **Environment** của dịch vụ Render và tạo biến
-> `PYTHON_VERSION=3.11.9` (hoặc 3.10.x). Render hiện mặc định lên Python 3.13,
-> phiên bản mà TensorFlow chưa hỗ trợ, dẫn đến lỗi
-> `No matching distribution found for tensorflow==2.17.0`. Blueprint
-> `render.yaml` trong repo cũng đã đặt sẵn Python 3.11 cho bạn.
+> Khi triển khai trên Render, đặt biến môi trường `PYTHON_VERSION=3.10.14`
+> trong trang cấu hình dịch vụ để Render dùng phiên bản Python tương thích với
+> TensorFlow. Nếu không, Render sẽ mặc định lên Python 3.13 và việc cài đặt
+> `tensorflow==2.17.0` sẽ thất bại.
 
 ## 2. Starting the server
 
