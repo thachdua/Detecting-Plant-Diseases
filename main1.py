@@ -219,6 +219,14 @@ CLASS_NAMES = [
     'Tomato___healthy'
 ]
 
+# Nhóm các lớp theo loại cây để tiện lọc khi dự đoán
+PLANT_TO_CLASSES = {}
+for idx, cls in enumerate(CLASS_NAMES):
+    plant = cls.split("___")[0]
+    PLANT_TO_CLASSES.setdefault(plant, []).append((idx, cls))
+
+PLANT_OPTIONS = sorted(PLANT_TO_CLASSES.keys())
+
 # =========================
 # 3) HÀM DỰ ĐOÁN
 # =========================
@@ -229,7 +237,7 @@ def model_prediction(file):
     preds = model.predict(input_arr)
     idx = int(np.argmax(preds, axis=1)[0])
     conf = float(np.max(preds))
-    prob_vec = preds[0].tolist()
+    prob_vec = preds[0]
     return idx, conf, prob_vec
 
 # =========================
@@ -411,6 +419,11 @@ else:  # Nhận diện bệnh
     with st.container():
         left, right = st.columns([1,1])
         with left:
+            plant_choice = st.selectbox(
+                "Chọn loại cây cần kiểm tra:",
+                options=PLANT_OPTIONS,
+                help="Hệ thống sẽ chỉ trả về các bệnh thuộc loại cây đã chọn."
+            )
             test_image = st.file_uploader("Chọn ảnh lá/cây (jpg/png):", type=["jpg", "jpeg", "png"])
             show_btn = st.button("👁️ Hiển thị ảnh")
             predict_btn = st.button("🤖 Dự đoán")
@@ -434,7 +447,21 @@ else:  # Nhận diện bệnh
     if test_image and predict_btn:
         with st.spinner("Đang phân tích..."):
             idx, conf, prob_vec = model_prediction(test_image)
-            label = CLASS_NAMES[idx]
+            # Lọc xác suất theo loại cây được chọn
+            plant_classes = PLANT_TO_CLASSES.get(plant_choice, [])
+            plant_indices = [i for i, _ in plant_classes]
+            plant_probs = prob_vec[plant_indices]
+
+            if plant_probs.size == 0:
+                st.error("Danh sách bệnh của cây này đang trống.")
+                st.stop()
+
+            best_local_idx = int(np.argmax(plant_probs))
+            best_global_idx = plant_indices[best_local_idx]
+            label = CLASS_NAMES[best_global_idx]
+            conf_within_group = float(plant_probs[best_local_idx])
+            group_prob_sum = float(np.sum(plant_probs))
+            normalized_conf = conf_within_group / group_prob_sum if group_prob_sum > 0 else 0.0
 
         # KẾT QUẢ
         st.markdown(
@@ -444,7 +471,7 @@ else:  # Nhận diện bệnh
                 <span class="badge">Kết quả</span>
                 <h3 style="margin:0;">{label}</h3>
               </div>
-              <div style="margin-top:8px;color:#64748b">Độ tự tin mô hình: <b>{conf:.2%}</b></div>
+              <div style="margin-top:8px;color:#64748b">Độ tự tin trong nhóm {plant_choice}: <b>{normalized_conf:.2%}</b></div>
             </div>
             """,
             unsafe_allow_html=True
@@ -455,8 +482,13 @@ else:  # Nhận diện bệnh
             st.markdown(get_recommendation(label))
 
         # TOP-5 XÁC SUẤT (thanh tiến độ đẹp)
-        with st.expander("📈 Xác suất các lớp (Top-5)"):
-            topk = sorted(list(zip(CLASS_NAMES, prob_vec)), key=lambda x: x[1], reverse=True)[:5]
+        with st.expander(f"📈 Xác suất các lớp của {plant_choice} (Top-5)"):
+            normalized_probs = plant_probs / group_prob_sum if group_prob_sum > 0 else plant_probs
+            topk = sorted(
+                list(zip([name for _, name in plant_classes], normalized_probs)),
+                key=lambda x: x[1],
+                reverse=True
+            )[: min(5, len(plant_classes))]
             for cls, p in topk:
                 st.markdown(
                     f"""
@@ -470,4 +502,4 @@ else:  # Nhận diện bệnh
                 )
 
     elif not test_image:
-        st.info("Vui lòng tải một ảnh để bắt đầu.")
+        st.info("Vui lòng chọn loại cây và tải một ảnh để bắt đầu.")
