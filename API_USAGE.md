@@ -5,9 +5,8 @@ plant disease detection model and how client applications can interact with it.
 
 ## 1. Environment setup
 
-1. Create or activate a Python 3.9–3.11 virtual environment. TensorFlow 2.17.0
-   (pinned in `requirements.txt`) hỗ trợ chính thức tối đa đến Python 3.11, vì
-   vậy hãy tránh dùng Python 3.12+ khi cài đặt trực tiếp trên máy của bạn.
+1. Create or activate a Python 3.9+ virtual environment (TensorFlow 2.17
+   currently ships wheels for CPython 3.9–3.11 only).
 2. Install the dependencies:
 
    ```bash
@@ -20,17 +19,10 @@ plant disease detection model and how client applications can interact with it.
 > on demand when handling predictions.
 
 > **Render tip**
-> Render Free tier mặc định build bằng Python 3.13, trong khi TensorFlow 2.17.0
-> chưa có wheel cho phiên bản này. Để tránh lỗi `No matching distribution found
-> for tensorflow==2.17.0`, bạn có hai lựa chọn:
->
-> 1. Vào tab **Environment** của dịch vụ và đặt biến `PYTHON_VERSION=3.11.9`
->    (hoặc 3.10.x).
-> 2. Deploy bằng blueprint `render.yaml` trong repo, vì file này đã cố định
->    `pythonVersion: 3.11.9`.
->
-> Khi Render nâng cấp mặc định lên phiên bản Python được TensorFlow hỗ trợ, bạn
-> có thể bỏ cấu hình này.
+> Khi triển khai trên Render, đặt biến môi trường `PYTHON_VERSION=3.10.14`
+> trong trang cấu hình dịch vụ để Render dùng phiên bản Python tương thích với
+> TensorFlow. Nếu không, Render sẽ mặc định lên Python 3.13 và việc cài đặt
+> `tensorflow==2.17.0` sẽ thất bại.
 
 ## 2. Starting the server
 
