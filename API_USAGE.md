@@ -5,17 +5,24 @@ plant disease detection model and how client applications can interact with it.
 
 ## 1. Environment setup
 
-1. Create or activate a Python 3.9+ virtual environment.
+1. Create or activate a Python 3.9+ virtual environment (TensorFlow 2.17
+   currently ships wheels for CPython 3.9–3.11 only).
 2. Install the dependencies:
 
    ```bash
    pip install -r requirements.txt
    ```
 
-> **Note**  
+> **Note**
 > The TensorFlow model file `trained_model.h5` must be present in the project
 > root (it is already tracked in this repository). The service loads this file
 > on demand when handling predictions.
+
+> **Render tip**
+> Khi triển khai trên Render, đặt biến môi trường `PYTHON_VERSION=3.10.14`
+> trong trang cấu hình dịch vụ để Render dùng phiên bản Python tương thích với
+> TensorFlow. Nếu không, Render sẽ mặc định lên Python 3.13 và việc cài đặt
+> `tensorflow==2.17.0` sẽ thất bại.
 
 ## 2. Starting the server
 
