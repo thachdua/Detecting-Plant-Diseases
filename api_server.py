@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from io import BytesIO
-from typing import List
+from typing import Dict, List, Sequence
 
 import numpy as np
 import tensorflow as tf
@@ -61,6 +61,19 @@ CLASS_NAMES: List[str] = [
 ]
 
 
+def _build_plant_mappings(class_names: Sequence[str]) -> Dict[str, List[int]]:
+    """Group class indices by plant name extracted from the label."""
+
+    plant_to_indices: Dict[str, List[int]] = {}
+    for idx, label in enumerate(class_names):
+        plant = label.split("___")[0]
+        plant_to_indices.setdefault(plant, []).append(idx)
+    return plant_to_indices
+
+
+PLANT_TO_CLASS_INDICES: Dict[str, List[int]] = _build_plant_mappings(CLASS_NAMES)
+
+
 def preprocess_image(contents: bytes) -> np.ndarray:
     """Convert raw bytes into a model-ready tensor."""
     try:
@@ -73,15 +86,58 @@ def preprocess_image(contents: bytes) -> np.ndarray:
     return array
 
 
-def predict(image_array: np.ndarray) -> dict:
+def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
     """Run inference and format the response payload."""
     model = load_model()
     preds = model.predict(image_array)
-    idx = int(np.argmax(preds, axis=1)[0])
-    confidence = float(np.max(preds))
     prob_vec = preds[0]
 
-    # Prepare probability list sorted desc
+    restricted_indices: Sequence[int] | None = None
+    if plant:
+        restricted_indices = PLANT_TO_CLASS_INDICES.get(plant)
+
+    if restricted_indices:
+        plant_probs = prob_vec[list(restricted_indices)]
+        best_local_idx = int(np.argmax(plant_probs))
+        best_global_idx = restricted_indices[best_local_idx]
+        label = CLASS_NAMES[best_global_idx]
+        confidence = float(prob_vec[best_global_idx])
+
+        group_prob_sum = float(np.sum(plant_probs))
+        normalized_conf = (
+            float(plant_probs[best_local_idx] / group_prob_sum)
+            if group_prob_sum > 0
+            else 0.0
+        )
+
+        sorted_local_indices = np.argsort(plant_probs)[::-1]
+        probabilities = []
+        for local_idx in sorted_local_indices:
+            global_idx = restricted_indices[local_idx]
+            raw_prob = float(prob_vec[global_idx])
+            probabilities.append(
+                {
+                    "label": CLASS_NAMES[global_idx],
+                    "probability": raw_prob,
+                    "normalized_probability": (
+                        raw_prob / group_prob_sum if group_prob_sum > 0 else 0.0
+                    ),
+                }
+            )
+
+        recommendation = get_recommendation(label)
+        return {
+            "label": label,
+            "confidence": confidence,
+            "normalized_confidence": normalized_conf,
+            "probabilities": probabilities,
+            "plant": plant,
+            "recommendation_markdown": recommendation,
+        }
+
+    # Default behaviour: return probabilities for all classes
+    idx = int(np.argmax(prob_vec))
+    confidence = float(prob_vec[idx])
     top_indices = np.argsort(prob_vec)[::-1]
     probabilities = [
         {"label": CLASS_NAMES[i], "probability": float(prob_vec[i])}
@@ -116,14 +172,20 @@ def health() -> dict:
 
 
 @app.post("/predict")
-async def predict_endpoint(file: UploadFile = File(...)) -> dict:
+async def predict_endpoint(
+    file: UploadFile = File(...),
+    plant: str | None = None,
+) -> dict:
     """Accept an uploaded image and return the prediction results."""
     contents = await file.read()
     if not contents:
         raise HTTPException(status_code=400, detail="Tập tin tải lên rỗng.")
 
+    if plant and plant not in PLANT_TO_CLASS_INDICES:
+        raise HTTPException(status_code=400, detail="Loại cây không hợp lệ.")
+
     image_array = preprocess_image(contents)
-    result = predict(image_array)
+    result = predict(image_array, plant=plant)
     result["filename"] = file.filename
     return result
 
