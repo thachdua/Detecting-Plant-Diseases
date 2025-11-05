@@ -10,7 +10,7 @@ import tensorflow as tf
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from recommendation_vi import get_recommendation
+# Note: recommendation text is not returned by the API per request.
 
 
 @lru_cache(maxsize=1)
@@ -87,7 +87,15 @@ def preprocess_image(contents: bytes) -> np.ndarray:
 
 
 def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
-    """Run inference and format the response payload."""
+    """Run inference and format the response payload.
+
+    Changes made per request:
+    - Only return result when reported confidence > 0.80 (80%).
+    - Do not include recommendation_markdown in the response.
+    - Split label into `plant` and `disease` fields.
+    """
+    THRESHOLD = 0.80
+
     model = load_model()
     preds = model.predict(image_array)
     prob_vec = preds[0]
@@ -100,8 +108,8 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
         plant_probs = prob_vec[list(restricted_indices)]
         best_local_idx = int(np.argmax(plant_probs))
         best_global_idx = restricted_indices[best_local_idx]
-        label = CLASS_NAMES[best_global_idx]
-        confidence = float(prob_vec[best_global_idx])
+        full_label = CLASS_NAMES[best_global_idx]
+        confidence_raw = float(prob_vec[best_global_idx])
 
         group_prob_sum = float(np.sum(plant_probs))
         normalized_conf = (
@@ -110,48 +118,60 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
             else 0.0
         )
 
-        sorted_local_indices = np.argsort(plant_probs)[::-1]
-        probabilities = []
-        for local_idx in sorted_local_indices:
-            global_idx = restricted_indices[local_idx]
-            raw_prob = float(prob_vec[global_idx])
-            probabilities.append(
-                {
-                    "label": CLASS_NAMES[global_idx],
-                    "probability": raw_prob,
-                    "normalized_probability": (
-                        raw_prob / group_prob_sum if group_prob_sum > 0 else 0.0
-                    ),
-                }
+        # Use normalized confidence within the selected plant group as the sole
+        # decision metric per user's request. Do not return per-class probabilities.
+        reported_normalized = normalized_conf
+
+        if reported_normalized < THRESHOLD:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Độ tự tin trong nhóm ({reported_normalized:.2%}) dưới ngưỡng {THRESHOLD:.0%}"
             )
 
-        recommendation = get_recommendation(label)
+        # Split predicted label and return only normalized probability (no raw probs)
+        _, disease = full_label.split("___", 1)
+
         return {
-            "label": label,
-            "confidence": confidence,
-            "normalized_confidence": normalized_conf,
-            "probabilities": probabilities,
             "plant": plant,
-            "recommendation_markdown": recommendation,
+            "disease": disease,
+            "normalized_probability": reported_normalized,
         }
 
-    # Default behaviour: return probabilities for all classes
+    # Default behaviour: evaluate all classes and require raw confidence > THRESHOLD
     idx = int(np.argmax(prob_vec))
-    confidence = float(prob_vec[idx])
-    top_indices = np.argsort(prob_vec)[::-1]
-    probabilities = [
-        {"label": CLASS_NAMES[i], "probability": float(prob_vec[i])}
-        for i in top_indices
-    ]
+    confidence_raw = float(prob_vec[idx])
 
-    label = CLASS_NAMES[idx]
-    recommendation = get_recommendation(label)
+    if confidence_raw < THRESHOLD:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Độ tự tin ({confidence_raw:.2%}) dưới ngưỡng {THRESHOLD:.0%}"
+        )
+
+    top_indices = np.argsort(prob_vec)[::-1]
+    probabilities = []
+    for i in top_indices:
+        cls_full = CLASS_NAMES[i]
+        parts = cls_full.split("___", 1)
+        plant_name = parts[0]
+        disease_name = parts[1] if len(parts) > 1 else ""
+        probabilities.append(
+            {
+                "plant": plant_name,
+                "disease": disease_name,
+                "probability": float(prob_vec[i]),
+            }
+        )
+
+    full_label = CLASS_NAMES[idx]
+    parts = full_label.split("___", 1)
+    plant_name = parts[0]
+    disease_name = parts[1] if len(parts) > 1 else ""
 
     return {
-        "label": label,
-        "confidence": confidence,
+        "plant": plant_name,
+        "disease": disease_name,
+        "confidence": confidence_raw,
         "probabilities": probabilities,
-        "recommendation_markdown": recommendation,
     }
 
 
