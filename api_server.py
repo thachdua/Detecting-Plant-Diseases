@@ -10,9 +10,6 @@ import tensorflow as tf
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from recommendation_vi import get_recommendation
-
-
 @lru_cache(maxsize=1)
 def load_model() -> tf.keras.Model:
     """Load and cache the trained TensorFlow model."""
@@ -101,38 +98,54 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
         best_local_idx = int(np.argmax(plant_probs))
         best_global_idx = restricted_indices[best_local_idx]
         label = CLASS_NAMES[best_global_idx]
-        confidence = float(prob_vec[best_global_idx])
 
+        raw_confidence = float(prob_vec[best_global_idx])
         group_prob_sum = float(np.sum(plant_probs))
-        normalized_conf = (
-            float(plant_probs[best_local_idx] / group_prob_sum)
-            if group_prob_sum > 0
-            else 0.0
-        )
+        if group_prob_sum > 0:
+            normalized_probs = plant_probs / group_prob_sum
+            normalized_confidence = float(normalized_probs[best_local_idx])
+        else:
+            normalized_probs = np.zeros_like(plant_probs)
+            normalized_confidence = 0.0
+
+        if normalized_confidence < 0.8:
+            raise HTTPException(
+                status_code=404,
+                detail="Không tìm thấy kết quả có độ tin cậy từ 80%.",
+            )
 
         sorted_local_indices = np.argsort(plant_probs)[::-1]
         probabilities = []
         for local_idx in sorted_local_indices:
             global_idx = restricted_indices[local_idx]
             raw_prob = float(prob_vec[global_idx])
+            norm_prob = float(normalized_probs[local_idx])
+            if norm_prob < 0.8:
+                continue
+
+            prob_label = CLASS_NAMES[global_idx]
+            prob_plant, prob_disease = prob_label.split("___", maxsplit=1)
             probabilities.append(
                 {
-                    "label": CLASS_NAMES[global_idx],
+                    "label": prob_label,
+                    "plant": prob_plant,
+                    "disease": prob_disease,
                     "probability": raw_prob,
-                    "normalized_probability": (
-                        raw_prob / group_prob_sum if group_prob_sum > 0 else 0.0
-                    ),
+                    "normalized_probability": norm_prob,
                 }
             )
 
-        recommendation = get_recommendation(label)
+        plant_name, disease_name = label.split("___", maxsplit=1)
+
         return {
             "label": label,
-            "confidence": confidence,
-            "normalized_confidence": normalized_conf,
+            "confidence": normalized_confidence,
+            "normalized_confidence": normalized_confidence,
+            "raw_confidence": raw_confidence,
             "probabilities": probabilities,
             "plant": plant,
-            "recommendation_markdown": recommendation,
+            "plant_name": plant_name,
+            "disease_name": disease_name,
         }
 
     # Default behaviour: return probabilities for all classes
@@ -145,13 +158,38 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
     ]
 
     label = CLASS_NAMES[idx]
-    recommendation = get_recommendation(label)
+    if confidence < 0.8:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy kết quả có độ tin cậy từ 80%.",
+        )
+
+    filtered_probabilities = []
+    for entry in probabilities:
+        if entry["probability"] >= 0.8:
+            prob_label = entry["label"]
+            prob_plant, prob_disease = prob_label.split("___", maxsplit=1)
+            filtered_probabilities.append(
+                {
+                    "label": prob_label,
+                    "plant": prob_plant,
+                    "disease": prob_disease,
+                    "probability": entry["probability"],
+                    "normalized_probability": entry["probability"],
+                }
+            )
+
+    plant_name, disease_name = label.split("___", maxsplit=1)
 
     return {
         "label": label,
         "confidence": confidence,
-        "probabilities": probabilities,
-        "recommendation_markdown": recommendation,
+        "normalized_confidence": confidence,
+        "raw_confidence": confidence,
+        "probabilities": filtered_probabilities,
+        "plant": plant_name,
+        "plant_name": plant_name,
+        "disease_name": disease_name,
     }
 
 
