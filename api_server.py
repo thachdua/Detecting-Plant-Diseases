@@ -10,6 +10,7 @@ import tensorflow as tf
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+
 @lru_cache(maxsize=1)
 def load_model() -> tf.keras.Model:
     """Load and cache the trained TensorFlow model."""
@@ -83,6 +84,13 @@ def preprocess_image(contents: bytes) -> np.ndarray:
     return array
 
 
+def _split_label(label: str) -> tuple[str, str]:
+    """Return the plant and disease names derived from a class label."""
+
+    plant_name, disease_name = label.split("___", maxsplit=1)
+    return plant_name, disease_name
+
+
 def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
     """Run inference and format the response payload."""
     model = load_model()
@@ -94,103 +102,58 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
         restricted_indices = PLANT_TO_CLASS_INDICES.get(plant)
 
     if restricted_indices:
-        plant_probs = prob_vec[list(restricted_indices)]
-        best_local_idx = int(np.argmax(plant_probs))
-        best_global_idx = restricted_indices[best_local_idx]
-        label = CLASS_NAMES[best_global_idx]
+        indices = list(restricted_indices)
+    else:
+        indices = list(range(len(CLASS_NAMES)))
 
-        raw_confidence = float(prob_vec[best_global_idx])
-        group_prob_sum = float(np.sum(plant_probs))
-        if group_prob_sum > 0:
-            normalized_probs = plant_probs / group_prob_sum
-            normalized_confidence = float(normalized_probs[best_local_idx])
-        else:
-            normalized_probs = np.zeros_like(plant_probs)
-            normalized_confidence = 0.0
+    if not indices:
+        raise HTTPException(status_code=400, detail="Loại cây không hợp lệ.")
 
-        if normalized_confidence < 0.8:
-            raise HTTPException(
-                status_code=404,
-                detail="Không tìm thấy kết quả có độ tin cậy từ 80%.",
-            )
+    subset_probs = prob_vec[indices]
+    best_local_idx = int(np.argmax(subset_probs))
+    best_global_idx = indices[best_local_idx]
+    best_probability = float(prob_vec[best_global_idx])
 
-        sorted_local_indices = np.argsort(plant_probs)[::-1]
-        probabilities = []
-        for local_idx in sorted_local_indices:
-            global_idx = restricted_indices[local_idx]
-            raw_prob = float(prob_vec[global_idx])
-            norm_prob = float(normalized_probs[local_idx])
-            if norm_prob < 0.8:
-                continue
-
-            prob_label = CLASS_NAMES[global_idx]
-            prob_plant, prob_disease = prob_label.split("___", maxsplit=1)
-            probabilities.append(
-                {
-                    "label": prob_label,
-                    "plant": prob_plant,
-                    "disease": prob_disease,
-                    "probability": raw_prob,
-                    "normalized_probability": norm_prob,
-                }
-            )
-
-        plant_name, disease_name = label.split("___", maxsplit=1)
-
-        return {
-            "label": label,
-            "confidence": normalized_confidence,
-            "normalized_confidence": normalized_confidence,
-            "raw_confidence": raw_confidence,
-            "probabilities": probabilities,
-            "plant": plant,
-            "plant_name": plant_name,
-            "disease_name": disease_name,
-        }
-
-    # Default behaviour: return probabilities for all classes
-    idx = int(np.argmax(prob_vec))
-    confidence = float(prob_vec[idx])
-    top_indices = np.argsort(prob_vec)[::-1]
-    probabilities = [
-        {"label": CLASS_NAMES[i], "probability": float(prob_vec[i])}
-        for i in top_indices
-    ]
-
-    label = CLASS_NAMES[idx]
-    if confidence < 0.8:
+    if best_probability < 0.8:
         raise HTTPException(
             status_code=404,
             detail="Không tìm thấy kết quả có độ tin cậy từ 80%.",
         )
 
     filtered_probabilities = []
-    for entry in probabilities:
-        if entry["probability"] >= 0.8:
-            prob_label = entry["label"]
-            prob_plant, prob_disease = prob_label.split("___", maxsplit=1)
-            filtered_probabilities.append(
-                {
-                    "label": prob_label,
-                    "plant": prob_plant,
-                    "disease": prob_disease,
-                    "probability": entry["probability"],
-                    "normalized_probability": entry["probability"],
-                }
-            )
+    for local_idx, global_idx in sorted(
+        enumerate(indices), key=lambda item: prob_vec[item[1]], reverse=True
+    ):
+        probability = float(prob_vec[global_idx])
+        if probability < 0.8:
+            continue
 
-    plant_name, disease_name = label.split("___", maxsplit=1)
+        label = CLASS_NAMES[global_idx]
+        plant_name, disease_name = _split_label(label)
+        filtered_probabilities.append(
+            {
+                "label": label,
+                "plant": plant_name,
+                "disease": disease_name,
+                "probability": probability,
+            }
+        )
 
-    return {
-        "label": label,
-        "confidence": confidence,
-        "normalized_confidence": confidence,
-        "raw_confidence": confidence,
+    best_label = CLASS_NAMES[best_global_idx]
+    plant_name, disease_name = _split_label(best_label)
+
+    response = {
+        "label": best_label,
+        "confidence": best_probability,
         "probabilities": filtered_probabilities,
-        "plant": plant_name,
         "plant_name": plant_name,
         "disease_name": disease_name,
     }
+
+    if plant:
+        response["requested_plant"] = plant
+
+    return response
 
 
 app = FastAPI(title="Plant Disease Detection API", version="1.0.0")
