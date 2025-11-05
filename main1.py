@@ -1,8 +1,12 @@
+import base64
+import os
+from io import BytesIO
+from pathlib import Path
+
+import numpy as np
+import requests
 import streamlit as st
 import tensorflow as tf
-import numpy as np
-import base64
-from pathlib import Path
 from recommendation_vi import get_recommendation, get_quick_ref_markdown  # ⟵ THÊM HÀM NÀY
 
 
@@ -17,6 +21,14 @@ st.set_page_config(
 )
 
 ASSETS_DIR = Path("assets")
+
+DEFAULT_API_BASE_URL = os.getenv("PLANT_API_URL", "").strip()
+try:
+    secret_candidate = st.secrets.get("api_base_url", "").strip()  # type: ignore[attr-defined]
+except Exception:
+    secret_candidate = ""
+if secret_candidate:
+    DEFAULT_API_BASE_URL = secret_candidate
 
 # =========================
 # CSS TUỲ BIẾN (FRONTEND)
@@ -173,7 +185,18 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 def load_model():
     return tf.keras.models.load_model('trained_model.h5')
 
-model = load_model()
+
+class PredictionError(RuntimeError):
+    """Custom error to bubble up issues from local or remote inference."""
+
+
+def build_predict_url(base_url: str) -> str:
+    base = (base_url or "").strip()
+    if not base:
+        return ""
+    if base.endswith("/predict"):
+        return base
+    return base.rstrip("/") + "/predict"
 
 # =========================
 # 2) DANH MỤC LỚP (GIỮ NGUYÊN THỨ TỰ)
@@ -219,18 +242,111 @@ CLASS_NAMES = [
     'Tomato___healthy'
 ]
 
+# Nhóm các lớp theo loại cây để tiện lọc khi dự đoán
+PLANT_TO_CLASSES = {}
+for idx, cls in enumerate(CLASS_NAMES):
+    plant = cls.split("___")[0]
+    PLANT_TO_CLASSES.setdefault(plant, []).append((idx, cls))
+
+PLANT_OPTIONS = sorted(PLANT_TO_CLASSES.keys())
+
 # =========================
 # 3) HÀM DỰ ĐOÁN
 # =========================
-def model_prediction(file):
-    image = tf.keras.preprocessing.image.load_img(file, target_size=(128, 128))
+def model_prediction(file, plant_choice: str, api_base_url: str):
+    try:
+        file.seek(0)
+    except Exception:
+        pass
+
+    file_bytes = file.getvalue()
+    if not file_bytes:
+        raise PredictionError("Không đọc được dữ liệu ảnh từ tệp tải lên.")
+
+    api_base_url = (api_base_url or "").strip()
+    if api_base_url:
+        predict_url = build_predict_url(api_base_url)
+        files = {
+            "file": (
+                getattr(file, "name", "upload.jpg") or "upload.jpg",
+                file_bytes,
+                getattr(file, "type", "application/octet-stream") or "application/octet-stream",
+            )
+        }
+        data = {"plant": plant_choice}
+        try:
+            response = requests.post(predict_url, data=data, files=files, timeout=60)
+            response.raise_for_status()
+        except requests.RequestException as exc:  # pragma: no cover - network interaction
+            raise PredictionError(
+                "Không thể gọi API dự đoán. Vui lòng kiểm tra URL và trạng thái máy chủ."
+            ) from exc
+
+        try:
+            payload = response.json()
+        except ValueError as exc:  # pragma: no cover - JSON decode error
+            raise PredictionError("API trả về dữ liệu không hợp lệ (không phải JSON).") from exc
+        
+        payload.setdefault("plant", plant_choice)
+        payload.setdefault("source", "api")
+        payload.setdefault("backend_url", predict_url)
+        return payload
+
+    image = tf.keras.preprocessing.image.load_img(BytesIO(file_bytes), target_size=(128, 128))
     input_arr = tf.keras.preprocessing.image.img_to_array(image)
     input_arr = np.expand_dims(input_arr, axis=0)
-    preds = model.predict(input_arr)
-    idx = int(np.argmax(preds, axis=1)[0])
-    conf = float(np.max(preds))
-    prob_vec = preds[0].tolist()
-    return idx, conf, prob_vec
+    preds = load_model().predict(input_arr, verbose=0)
+    prob_vec = preds[0]
+
+    plant_classes = PLANT_TO_CLASSES.get(plant_choice, [])
+    if not plant_classes:
+        raise PredictionError("Danh sách bệnh của cây này đang trống.")
+
+    plant_indices = [i for i, _ in plant_classes]
+    plant_probs = prob_vec[plant_indices]
+
+    if plant_probs.size == 0:
+        raise PredictionError("Không thu được xác suất hợp lệ cho cây đã chọn.")
+
+    best_local_idx = int(np.argmax(plant_probs))
+    best_global_idx = plant_indices[best_local_idx]
+    label = CLASS_NAMES[best_global_idx]
+    confidence = float(prob_vec[best_global_idx])
+
+    group_prob_sum = float(np.sum(plant_probs))
+    if group_prob_sum > 0:
+        normalized_vector = plant_probs / group_prob_sum
+    else:
+        normalized_vector = np.zeros_like(plant_probs)
+
+    sorted_entries = sorted(
+        zip(plant_classes, plant_probs, normalized_vector),
+        key=lambda item: float(item[1]),
+        reverse=True,
+    )
+
+    probabilities = []
+    for (idx, class_label), raw_prob, norm_prob in sorted_entries:
+        probabilities.append(
+            {
+                "label": class_label,
+                "probability": float(raw_prob),
+                "normalized_probability": float(norm_prob),
+            }
+        )
+
+    recommendation = get_recommendation(label)
+    return {
+        "label": label,
+        "confidence": confidence,
+        "normalized_confidence": float(normalized_vector[best_local_idx]) if normalized_vector.size else 0.0,
+        "probabilities": probabilities,
+        "plant": plant_choice,
+        "recommendation_markdown": recommendation,
+        "source": "local",
+        "backend_url": "local",
+        "filename": getattr(file, "name", "upload.jpg"),
+    }
 
 # =========================
 # TIỆN ÍCH: TẢI ẢNH & SLIDER
@@ -290,6 +406,23 @@ app_mode = st.sidebar.selectbox(
     "Chọn trang",
     ["Home", "Giới thiệu", "Nhận diện bệnh", "Bộ sưu tập", "Bảng tra nhanh"]  # ⟵ THÊM TRANG MỚI
 )
+
+if "api_base_url" not in st.session_state:
+    st.session_state["api_base_url"] = DEFAULT_API_BASE_URL
+
+api_base_input = st.sidebar.text_input(
+    "API backend URL (tùy chọn)",
+    value=st.session_state["api_base_url"],
+    help="Để trống nếu muốn chạy mô hình TensorFlow cục bộ trên Streamlit. Điền URL server FastAPI để gửi ảnh qua API.",
+    placeholder="https://your-service.onrender.com",
+)
+
+st.session_state["api_base_url"] = api_base_input.strip()
+
+if st.session_state["api_base_url"]:
+    st.sidebar.success("Đang gửi ảnh tới API backend đã công khai.")
+else:
+    st.sidebar.info("Ứng dụng đang dùng mô hình cục bộ (không gọi API).")
 
 with st.sidebar:
     st.markdown("—")
@@ -411,6 +544,11 @@ else:  # Nhận diện bệnh
     with st.container():
         left, right = st.columns([1,1])
         with left:
+            plant_choice = st.selectbox(
+                "Chọn loại cây cần kiểm tra:",
+                options=PLANT_OPTIONS,
+                help="Hệ thống sẽ chỉ trả về các bệnh thuộc loại cây đã chọn."
+            )
             test_image = st.file_uploader("Chọn ảnh lá/cây (jpg/png):", type=["jpg", "jpeg", "png"])
             show_btn = st.button("👁️ Hiển thị ảnh")
             predict_btn = st.button("🤖 Dự đoán")
@@ -432,9 +570,18 @@ else:  # Nhận diện bệnh
         st.image(test_image, use_column_width=True, caption="Ảnh đã chọn")
 
     if test_image and predict_btn:
+        api_base_url = st.session_state.get("api_base_url", DEFAULT_API_BASE_URL)
         with st.spinner("Đang phân tích..."):
-            idx, conf, prob_vec = model_prediction(test_image)
-            label = CLASS_NAMES[idx]
+            try:
+                result = model_prediction(test_image, plant_choice, api_base_url)
+            except PredictionError as exc:
+                st.error(str(exc))
+                st.stop()
+
+        label = result.get("label", "Không xác định")
+        normalized_conf = result.get("normalized_confidence")
+        if normalized_conf is None:
+            normalized_conf = result.get("confidence", 0.0)
 
         # KẾT QUẢ
         st.markdown(
@@ -444,30 +591,48 @@ else:  # Nhận diện bệnh
                 <span class="badge">Kết quả</span>
                 <h3 style="margin:0;">{label}</h3>
               </div>
-              <div style="margin-top:8px;color:#64748b">Độ tự tin mô hình: <b>{conf:.2%}</b></div>
+              <div style="margin-top:8px;color:#64748b">Độ tự tin trong nhóm {plant_choice}: <b>{normalized_conf:.2%}</b></div>
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
+        backend_url = result.get("backend_url")
+        if backend_url and backend_url != "local":
+            st.caption(f"🔗 Dữ liệu dự đoán được gửi tới API: {backend_url}")
+        else:
+            st.caption("🖥️ Mô hình đang chạy trực tiếp trên máy chủ Streamlit.")
+
         # KHUYẾN NGHỊ
-        with st.expander("📋 Khuyến nghị xử lý (Recommendation)"):
-            st.markdown(get_recommendation(label))
+        recommendation_md = result.get("recommendation_markdown")
+        if recommendation_md:
+            with st.expander("📋 Khuyến nghị xử lý (Recommendation)"):
+                st.markdown(recommendation_md)
 
         # TOP-5 XÁC SUẤT (thanh tiến độ đẹp)
-        with st.expander("📈 Xác suất các lớp (Top-5)"):
-            topk = sorted(list(zip(CLASS_NAMES, prob_vec)), key=lambda x: x[1], reverse=True)[:5]
-            for cls, p in topk:
-                st.markdown(
-                    f"""
-                    <div style="display:flex;align-items:center;justify-content:space-between;margin:6px 2px;">
-                      <div style="font-weight:600">{cls}</div>
-                      <div style="color:#64748b">{p:.2%}</div>
-                    </div>
-                    <div class="prog"><span style="width:{p*100:.2f}%"></span></div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
+        probabilities = result.get("probabilities", [])
+        if probabilities:
+            with st.expander(f"📈 Xác suất các lớp của {plant_choice} (Top-5)"):
+                topk = probabilities[: min(5, len(probabilities))]
+                for entry in topk:
+                    cls = entry.get("label", "?")
+                    prob_value = entry.get("normalized_probability")
+                    if prob_value is None:
+                        group_sum = sum(item.get("probability", 0.0) for item in probabilities)
+                        prob_value = (
+                            entry.get("probability", 0.0) / group_sum if group_sum else entry.get("probability", 0.0)
+                        )
+                    st.markdown(
+                        f"""
+                        <div style="display:flex;align-items:center;justify-content:space-between;margin:6px 2px;">
+                          <div style="font-weight:600">{cls}</div>
+                          <div style="color:#64748b">{prob_value:.2%}</div>
+                        </div>
+                        <div class="prog"><span style="width:{prob_value*100:.2f}%"></span></div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+        else:
+            st.info("Không có dữ liệu xác suất chi tiết từ kết quả trả về.")
     elif not test_image:
-        st.info("Vui lòng tải một ảnh để bắt đầu.")
+        st.info("Vui lòng chọn loại cây và tải một ảnh để bắt đầu.")
