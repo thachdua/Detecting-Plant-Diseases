@@ -10,9 +10,6 @@ import tensorflow as tf
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from recommendation_vi import get_recommendation
-
-
 @lru_cache(maxsize=1)
 def load_model() -> tf.keras.Model:
     """Load and cache the trained TensorFlow model."""
@@ -125,14 +122,36 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
                 }
             )
 
-        recommendation = get_recommendation(label)
+        plant_name, disease_name = label.split("___", maxsplit=1)
+        if confidence < 0.8:
+            raise HTTPException(
+                status_code=404,
+                detail="Không tìm thấy kết quả có độ tin cậy từ 80%.",
+            )
+
+        filtered_probabilities = []
+        for entry in probabilities:
+            if entry["probability"] >= 0.8:
+                prob_label = entry["label"]
+                prob_plant, prob_disease = prob_label.split("___", maxsplit=1)
+                filtered_probabilities.append(
+                    {
+                        "label": prob_label,
+                        "plant": prob_plant,
+                        "disease": prob_disease,
+                        "probability": entry["probability"],
+                        "normalized_probability": entry["normalized_probability"],
+                    }
+                )
+
         return {
             "label": label,
             "confidence": confidence,
             "normalized_confidence": normalized_conf,
-            "probabilities": probabilities,
+            "probabilities": filtered_probabilities,
             "plant": plant,
-            "recommendation_markdown": recommendation,
+            "plant_name": plant_name,
+            "disease_name": disease_name,
         }
 
     # Default behaviour: return probabilities for all classes
@@ -145,13 +164,34 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
     ]
 
     label = CLASS_NAMES[idx]
-    recommendation = get_recommendation(label)
+    if confidence < 0.8:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy kết quả có độ tin cậy từ 80%.",
+        )
+
+    filtered_probabilities = []
+    for entry in probabilities:
+        if entry["probability"] >= 0.8:
+            prob_label = entry["label"]
+            prob_plant, prob_disease = prob_label.split("___", maxsplit=1)
+            filtered_probabilities.append(
+                {
+                    "label": prob_label,
+                    "plant": prob_plant,
+                    "disease": prob_disease,
+                    "probability": entry["probability"],
+                }
+            )
+
+    plant_name, disease_name = label.split("___", maxsplit=1)
 
     return {
         "label": label,
         "confidence": confidence,
-        "probabilities": probabilities,
-        "recommendation_markdown": recommendation,
+        "probabilities": filtered_probabilities,
+        "plant_name": plant_name,
+        "disease_name": disease_name,
     }
 
 
