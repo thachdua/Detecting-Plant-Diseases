@@ -1,9 +1,12 @@
 """FastAPI server exposing plant disease prediction endpoints."""
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from io import BytesIO
 from typing import Dict, List, Sequence
+
+import os
 
 import numpy as np
 import tensorflow as tf
@@ -181,11 +184,86 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
 
 
 # --- (ĐÃ THÊM) Thiết lập OpenTelemetry ---
+logger = logging.getLogger(__name__)
+
 # 1. Tạo một "provider" (bộ cung cấp)
 provider = TracerProvider()
 
 # 2. Tạo một "exporter" (bộ xuất)
 #    Nó sẽ TỰ ĐỘNG đọc các biến môi trường OTEL_... mà bạn đã cài trên Render
+
+
+def _has_scope_header(headers: list[str]) -> bool:
+    """Kiểm tra xem danh sách header đã có trường X-Scope-OrgID/Grafana chưa."""
+
+    for header in headers:
+        header_lower = header.lower()
+        if header_lower.startswith("x-scope-orgid=") or header_lower.startswith(
+            "x-grafana-org-id="
+        ):
+            return True
+    return False
+
+
+def _infer_stack_id() -> str | None:
+    """Thử suy ra stack slug của Grafana Cloud từ biến môi trường."""
+
+    explicit_stack = os.environ.get("OTEL_GRAFANA_STACK_ID") or os.environ.get(
+        "GRAFANA_STACK_SLUG"
+    )
+    if explicit_stack and explicit_stack.strip():
+        return explicit_stack.strip()
+
+    # Render luôn đặt RENDER_EXTERNAL_HOSTNAME = "<service>.onrender.com".
+    hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME") or os.environ.get(
+        "RENDER_EXTERNAL_URL"
+    )
+    if not hostname:
+        return None
+
+    # Nếu là URL đầy đủ thì bỏ phần giao thức.
+    hostname = hostname.split("//", 1)[-1]
+    slug = hostname.split(".", 1)[0]
+    return slug.strip() if slug else None
+
+
+def _ensure_grafana_scope_header() -> None:
+    """Append Grafana Cloud scope header when missing.
+
+    Render chỉ cho phép thiết lập biến môi trường dạng chuỗi. Người dùng
+    thường cài `OTEL_EXPORTER_OTLP_HEADERS` với token nhưng bỏ quên header
+    `X-Scope-OrgID`. Thiếu header này Grafana không biết stack nào để gán
+    traces nên trả về lỗi 401 như thông báo "legacy auth cannot be upgraded".
+
+    Nếu phát hiện biến `OTEL_GRAFANA_STACK_ID` (hoặc fallback
+    `GRAFANA_STACK_SLUG`) thì tự động nối thêm header còn thiếu trước khi
+    khởi tạo exporter. Cơ chế này không ghi đè những cấu hình đã có sẵn.
+    """
+
+    headers_raw = os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "")
+    header_items = [item.strip() for item in headers_raw.split(",") if item.strip()]
+
+    if _has_scope_header(header_items):
+        return
+
+    stack_id = _infer_stack_id()
+    if not stack_id:
+        logger.warning(
+            "Chưa thể tự suy ra Grafana stack slug. Vui lòng đặt biến"
+            " OTEL_GRAFANA_STACK_ID hoặc GRAFANA_STACK_SLUG."
+        )
+        return
+
+    extra_header = f"X-Scope-OrgID={stack_id}"
+    header_items.append(extra_header)
+    os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = ",".join(header_items)
+    logger.info(
+        "Đã tự động bổ sung header X-Scope-OrgID=%s cho OTLP exporter", stack_id
+    )
+
+
+_ensure_grafana_scope_header()
+
 otlp_exporter = OTLPSpanExporter()
 
 # 3. Gắn exporter vào provider
