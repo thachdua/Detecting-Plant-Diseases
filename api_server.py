@@ -285,6 +285,8 @@ def _ensure_authorization_header(source: list[str], target: list[str]) -> None:
         return  # Đã có, không cần làm gì
 
     # Nếu chưa có, tìm và sao chép từ source
+        return
+
     for item in source:
         if item.lower().startswith("authorization="):
             target.append(item)
@@ -424,6 +426,33 @@ def _log_authorization_diagnostics(headers: list[str]) -> None:
 
         logger.debug("Authorization header sử dụng scheme không nhận diện: %s", scheme_value)
         return
+        try:
+            decoded = base64.b64decode(encoded_credentials).decode()
+        except (ValueError, UnicodeDecodeError):
+            continue
+
+        username, _, _ = decoded.partition(":")
+        if not username.startswith("glc_"):
+            continue
+
+        grafana_meta = username[4:]
+        padded_meta = grafana_meta + "=" * (-len(grafana_meta) % 4)
+        try:
+            meta_payload = base64.b64decode(padded_meta).decode()
+            meta = json.loads(meta_payload)
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+
+        candidate = str(meta.get("o", "")).strip()
+        if not candidate:
+            continue
+
+        return [
+            f"X-Scope-OrgID={candidate}",
+            f"X-Grafana-Org-Id={candidate}",
+        ]
+
+    return []
 
 
 def _ensure_grafana_scope_header() -> None:
