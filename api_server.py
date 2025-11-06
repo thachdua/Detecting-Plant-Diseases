@@ -11,7 +11,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from opentelemetry import trace
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentator
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPTraceExporter
@@ -199,7 +199,7 @@ trace.set_tracer_provider(provider)
 app = FastAPI(title="Plant Disease Detection API", version="1.0.0")
 
 # --- (ĐÃ THÊM) Gắn OpenTelemetry vào ứng dụng FastAPI ---
-FastAPIInstrumentator.instrument_app(app)
+FastAPIInstrumentor.instrument_app(app)
 
 
 app.add_middleware(
@@ -240,4 +240,3 @@ if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 
     uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=False)
-    
