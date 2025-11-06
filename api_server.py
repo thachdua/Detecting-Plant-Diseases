@@ -232,6 +232,19 @@ def _serialise_headers(headers: list[str]) -> str:
     return ",".join(item for item in headers if item)
 
 
+def _header_keys(headers: list[str]) -> str:
+    """Trả về danh sách khóa header (ẩn giá trị) để ghi log an toàn."""
+
+    if not headers:
+        return "(none)"
+
+    keys: list[str] = []
+    for item in headers:
+        key, sep, _ = item.partition("=")
+        keys.append(key if sep else item)
+    return ", ".join(keys)
+
+
 def _unique_headers(headers: list[str]) -> list[str]:
     """Loại bỏ các header trùng nhau nhưng vẫn giữ nguyên thứ tự."""
 
@@ -419,6 +432,11 @@ def _ensure_grafana_scope_header() -> None:
         _ensure_authorization_header(header_items, traces_header_items)
         _ensure_authorization_header(traces_header_items, header_items)
         _ensure_env_header("OTEL_EXPORTER_OTLP_TRACES_HEADERS", traces_header_items)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "OTLP trace headers sau đồng bộ: %s",
+                _header_keys(traces_header_items),
+            )
     elif traces_headers_raw is not None and not traces_headers_raw.strip():
         # Nếu biến tồn tại nhưng rỗng, loại bỏ để exporter dùng chung cấu hình tổng quát.
         os.environ.pop("OTEL_EXPORTER_OTLP_TRACES_HEADERS", None)
@@ -429,6 +447,11 @@ def _ensure_grafana_scope_header() -> None:
             "Grafana sẽ trả về 401 nếu thiếu thông tin xác thực."
         )
     _ensure_env_header("OTEL_EXPORTER_OTLP_HEADERS", header_items)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "OTLP headers sau đồng bộ: %s",
+            _header_keys(header_items),
+        )
 
 
 _ensure_grafana_scope_header()
