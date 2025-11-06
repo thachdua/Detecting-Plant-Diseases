@@ -201,48 +201,9 @@ def _has_scope_header(headers: list[str]) -> bool:
         header_lower = header.lower()
         if header_lower.startswith("x-scope-orgid=") or header_lower.startswith(
             "x-grafana-org-id="
-        ) or header_lower.startswith("x-org-id="):
+        ):
             return True
     return False
-
-
-def _serialise_headers(headers: list[str]) -> str:
-    """Ghép các header thành chuỗi, bỏ qua mục trống."""
-
-    return ",".join(item for item in headers if item)
-
-
-def _unique_headers(headers: list[str]) -> list[str]:
-    """Loại bỏ các header trùng nhau nhưng vẫn giữ nguyên thứ tự."""
-
-    seen = set()
-    deduped: list[str] = []
-    for header in headers:
-        key = header.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(header)
-    return deduped
-
-
-def _normalise_header_encoding(header: str) -> str:
-    """Decode any phần trăm-encoding trong giá trị header."""
-
-    if "=" not in header:
-        return header
-
-    key, value = header.split("=", 1)
-    if "%" not in value:
-        return header
-
-    return f"{key}={unquote(value)}"
-
-
-def _ensure_env_header(var_name: str, headers: list[str]) -> None:
-    """Ghi lại danh sách header vào biến môi trường cụ thể."""
-
-    os.environ[var_name] = _serialise_headers(_unique_headers(headers))
 
 
 def _infer_stack_id() -> str | None:
@@ -281,37 +242,9 @@ def _ensure_grafana_scope_header() -> None:
     """
 
     headers_raw = os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "")
-    header_items = [
-        _normalise_header_encoding(item.strip())
-        for item in headers_raw.split(",")
-        if item.strip()
-    ]
+    header_items = [item.strip() for item in headers_raw.split(",") if item.strip()]
 
-    traces_headers_raw = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
-    traces_header_items = [
-        _normalise_header_encoding(item.strip())
-        for item in traces_headers_raw.split(",")
-        if item.strip()
-    ]
-
-    if _has_scope_header(header_items) or _has_scope_header(traces_header_items):
-        # Thu thập mọi header scope đã tồn tại rồi nhân bản sang biến còn thiếu.
-        scope_headers = []
-        for candidate in header_items + traces_header_items:
-            clower = candidate.lower()
-            if clower.startswith("x-scope-orgid=") or clower.startswith(
-                "x-grafana-org-id="
-            ) or clower.startswith("x-org-id="):
-                scope_headers.append(candidate)
-
-        # Nếu một trong hai danh sách chưa có header, ghép thêm bản sao.
-        if not _has_scope_header(header_items) and scope_headers:
-            header_items.extend(scope_headers)
-        if not _has_scope_header(traces_header_items) and scope_headers:
-            traces_header_items.extend(scope_headers)
-
-        _ensure_env_header("OTEL_EXPORTER_OTLP_HEADERS", header_items)
-        _ensure_env_header("OTEL_EXPORTER_OTLP_TRACES_HEADERS", traces_header_items)
+    if _has_scope_header(header_items):
         return
 
     stack_id = _infer_stack_id()
@@ -322,32 +255,15 @@ def _ensure_grafana_scope_header() -> None:
         )
         return
 
-    extra_headers = [
-        f"X-Scope-OrgID={stack_id}",
-        f"X-Grafana-Org-Id={stack_id}",
-    ]
-
-    header_items.extend(extra_headers)
-    traces_header_items.extend(extra_headers)
-    _ensure_env_header("OTEL_EXPORTER_OTLP_HEADERS", header_items)
-    _ensure_env_header("OTEL_EXPORTER_OTLP_TRACES_HEADERS", traces_header_items)
+    extra_header = f"X-Scope-OrgID={stack_id}"
+    header_items.append(extra_header)
+    os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = ",".join(header_items)
     logger.info(
-        "Đã tự động bổ sung các header Grafana scope (%s) cho OTLP exporter",
-        ", ".join(extra_headers),
+        "Đã tự động bổ sung header X-Scope-OrgID=%s cho OTLP exporter", stack_id
     )
 
 
 _ensure_grafana_scope_header()
-
-if logger.isEnabledFor(logging.DEBUG):
-    logger.debug(
-        "OTLP headers hiện tại: %s",
-        os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "(trống)"),
-    )
-    logger.debug(
-        "OTLP trace headers hiện tại: %s",
-        os.environ.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "(trống)"),
-    )
 
 otlp_exporter = OTLPSpanExporter()
 
