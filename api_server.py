@@ -10,11 +10,6 @@ import tensorflow as tf
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from opentelemetry import trace
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 # Note: recommendation text is not returned by the API per request.
 
 
@@ -180,27 +175,8 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
     }
 
 
-# --- (ĐÃ THÊM) Thiết lập OpenTelemetry ---
-# 1. Tạo một "provider" (bộ cung cấp)
-provider = TracerProvider()
-
-# 2. Tạo một "exporter" (bộ xuất)
-#    Nó sẽ TỰ ĐỘNG đọc các biến môi trường OTEL_... mà bạn đã cài trên Render
-otlp_exporter = OTLPSpanExporter()
-
-# 3. Gắn exporter vào provider
-provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-
-# 4. Đặt nó làm provider mặc định toàn cục
-trace.set_tracer_provider(provider)
-# --- Kết thúc thiết lập OpenTelemetry ---
-
-
 app = FastAPI(title="Plant Disease Detection API", version="1.0.0")
-
-# --- (ĐÃ THÊM) Gắn OpenTelemetry vào ứng dụng FastAPI ---
-FastAPIInstrumentor.instrument_app(app)
-
+app = FastAPI(title="Plant Disease Detection API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
