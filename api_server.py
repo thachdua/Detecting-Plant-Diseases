@@ -269,6 +269,8 @@ def _ensure_authorization_header(source: list[str], target: list[str]) -> None:
     """Đảm bảo target chứa Authorization, sao chép từ source nếu cần."""
 
     if _has_authorization(target):
+    has_auth = any(item.lower().startswith("authorization=") for item in target)
+    if has_auth:
         return
 
     for item in source:
