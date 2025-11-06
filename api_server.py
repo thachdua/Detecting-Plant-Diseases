@@ -259,6 +259,19 @@ def _ensure_env_header(var_name: str, headers: list[str]) -> None:
     os.environ[var_name] = _serialise_headers(_unique_headers(headers))
 
 
+def _ensure_authorization_header(source: list[str], target: list[str]) -> None:
+    """Đảm bảo target chứa Authorization, sao chép từ source nếu cần."""
+
+    has_auth = any(item.lower().startswith("authorization=") for item in target)
+    if has_auth:
+        return
+
+    for item in source:
+        if item.lower().startswith("authorization="):
+            target.append(item)
+            break
+
+
 def _infer_stack_id() -> str | None:
     """Thử suy ra stack slug của Grafana Cloud từ biến môi trường."""
 
@@ -343,12 +356,15 @@ def _ensure_grafana_scope_header() -> None:
         if item.strip()
     ]
 
-    traces_headers_raw = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
-    traces_header_items = [
-        _normalise_header_encoding(item.strip())
-        for item in traces_headers_raw.split(",")
-        if item.strip()
-    ]
+    traces_headers_raw = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+    traces_headers_defined = bool(traces_headers_raw and traces_headers_raw.strip())
+    traces_header_items = []
+    if traces_headers_defined:
+        traces_header_items = [
+            _normalise_header_encoding(item.strip())
+            for item in traces_headers_raw.split(",")
+            if item.strip()
+        ]
 
     scope_headers = []
     for candidate in header_items + traces_header_items:
@@ -392,11 +408,16 @@ def _ensure_grafana_scope_header() -> None:
 
     if not _has_scope_header(header_items):
         header_items.extend(scope_headers)
-    if not _has_scope_header(traces_header_items):
-        traces_header_items.extend(scope_headers)
+    if traces_headers_defined:
+        if not _has_scope_header(traces_header_items):
+            traces_header_items.extend(scope_headers)
+        _ensure_authorization_header(header_items, traces_header_items)
+        _ensure_env_header("OTEL_EXPORTER_OTLP_TRACES_HEADERS", traces_header_items)
+    elif traces_headers_raw is not None and not traces_headers_raw.strip():
+        # Nếu biến tồn tại nhưng rỗng, loại bỏ để exporter dùng chung cấu hình tổng quát.
+        os.environ.pop("OTEL_EXPORTER_OTLP_TRACES_HEADERS", None)
 
     _ensure_env_header("OTEL_EXPORTER_OTLP_HEADERS", header_items)
-    _ensure_env_header("OTEL_EXPORTER_OTLP_TRACES_HEADERS", traces_header_items)
 
 
 _ensure_grafana_scope_header()
