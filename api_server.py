@@ -220,6 +220,12 @@ def _has_scope_header(headers: list[str]) -> bool:
     return False
 
 
+def _has_authorization(headers: list[str]) -> bool:
+    """Kiểm tra danh sách header có Authorization hay không."""
+
+    return any(item.lower().startswith("authorization=") for item in headers)
+
+
 def _serialise_headers(headers: list[str]) -> str:
     """Ghép các header thành chuỗi, bỏ qua mục trống."""
 
@@ -262,6 +268,7 @@ def _ensure_env_header(var_name: str, headers: list[str]) -> None:
 def _ensure_authorization_header(source: list[str], target: list[str]) -> None:
     """Đảm bảo target chứa Authorization, sao chép từ source nếu cần."""
 
+    if _has_authorization(target):
     has_auth = any(item.lower().startswith("authorization=") for item in target)
     if has_auth:
         return
@@ -412,11 +419,17 @@ def _ensure_grafana_scope_header() -> None:
         if not _has_scope_header(traces_header_items):
             traces_header_items.extend(scope_headers)
         _ensure_authorization_header(header_items, traces_header_items)
+        _ensure_authorization_header(traces_header_items, header_items)
         _ensure_env_header("OTEL_EXPORTER_OTLP_TRACES_HEADERS", traces_header_items)
     elif traces_headers_raw is not None and not traces_headers_raw.strip():
         # Nếu biến tồn tại nhưng rỗng, loại bỏ để exporter dùng chung cấu hình tổng quát.
         os.environ.pop("OTEL_EXPORTER_OTLP_TRACES_HEADERS", None)
 
+    if not _has_authorization(header_items):
+        logger.warning(
+            "Không tìm thấy header Authorization trong OTEL_EXPORTER_OTLP_HEADERS. "
+            "Grafana sẽ trả về 401 nếu thiếu thông tin xác thực."
+        )
     _ensure_env_header("OTEL_EXPORTER_OTLP_HEADERS", header_items)
 
 
