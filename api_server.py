@@ -14,7 +14,7 @@ from opentelemetry import trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPTraceExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 # Note: recommendation text is not returned by the API per request.
 
 
@@ -186,7 +186,7 @@ provider = TracerProvider()
 
 # 2. Tạo một "exporter" (bộ xuất)
 #    Nó sẽ TỰ ĐỘNG đọc các biến môi trường OTEL_... mà bạn đã cài trên Render
-otlp_exporter = OTLPTraceExporter()
+otlp_exporter = OTLPSpanExporter()
 
 # 3. Gắn exporter vào provider
 provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
