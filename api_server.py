@@ -18,6 +18,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from urllib.parse import unquote
 # Note: recommendation text is not returned by the API per request.
 
 
@@ -277,7 +278,7 @@ trace.set_tracer_provider(provider)
 app = FastAPI(title="Plant Disease Detection API", version="1.0.0")
 
 # --- (ĐÃ THÊM) Gắn OpenTelemetry vào ứng dụng FastAPI ---
-FastAPIInstrumentor.instrument_app(app)
+FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
 
 
 app.add_middleware(
