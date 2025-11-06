@@ -1,9 +1,14 @@
 """FastAPI server exposing plant disease prediction endpoints."""
 from __future__ import annotations
 
+import base64
+import json
+import logging
 from functools import lru_cache
 from io import BytesIO
 from typing import Dict, List, Sequence
+
+import os
 
 import numpy as np
 import tensorflow as tf
@@ -12,9 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from opentelemetry import trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from urllib.parse import unquote
 # Note: recommendation text is not returned by the API per request.
 
 
@@ -181,11 +188,261 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
 
 
 # --- (ĐÃ THÊM) Thiết lập OpenTelemetry ---
+logger = logging.getLogger(__name__)
+
 # 1. Tạo một "provider" (bộ cung cấp)
-provider = TracerProvider()
+
+
+def _build_resource() -> Resource:
+    """Tạo resource cho tracer provider, đảm bảo có service.name hợp lệ."""
+
+    service_name = os.environ.get("OTEL_SERVICE_NAME", "detecting-plant-diseases-api").strip()
+    if not service_name:
+        service_name = "detecting-plant-diseases-api"
+    return Resource.create({"service.name": service_name})
+
+
+provider = TracerProvider(resource=_build_resource())
 
 # 2. Tạo một "exporter" (bộ xuất)
 #    Nó sẽ TỰ ĐỘNG đọc các biến môi trường OTEL_... mà bạn đã cài trên Render
+
+
+def _has_scope_header(headers: list[str]) -> bool:
+    """Kiểm tra xem danh sách header đã có trường X-Scope-OrgID/Grafana chưa."""
+
+    for header in headers:
+        header_lower = header.lower()
+        if header_lower.startswith("x-scope-orgid=") or header_lower.startswith(
+            "x-grafana-org-id="
+        ) or header_lower.startswith("x-org-id="):
+            return True
+    return False
+
+
+def _has_authorization(headers: list[str]) -> bool:
+    """Kiểm tra danh sách header có Authorization hay không."""
+
+    return any(item.lower().startswith("authorization=") for item in headers)
+
+
+def _serialise_headers(headers: list[str]) -> str:
+    """Ghép các header thành chuỗi, bỏ qua mục trống."""
+
+    return ",".join(item for item in headers if item)
+
+
+def _unique_headers(headers: list[str]) -> list[str]:
+    """Loại bỏ các header trùng nhau nhưng vẫn giữ nguyên thứ tự."""
+
+    seen = set()
+    deduped: list[str] = []
+    for header in headers:
+        key = header.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(header)
+    return deduped
+
+
+def _normalise_header_encoding(header: str) -> str:
+    """Decode any phần trăm-encoding trong giá trị header."""
+
+    if "=" not in header:
+        return header
+
+    key, value = header.split("=", 1)
+    if "%" not in value:
+        return header
+
+    return f"{key}={unquote(value)}"
+
+
+def _ensure_env_header(var_name: str, headers: list[str]) -> None:
+    """Ghi lại danh sách header vào biến môi trường cụ thể."""
+
+    os.environ[var_name] = _serialise_headers(_unique_headers(headers))
+
+
+def _ensure_authorization_header(source: list[str], target: list[str]) -> None:
+    """Đảm bảo target chứa Authorization, sao chép từ source nếu cần."""
+
+    if _has_authorization(target):
+        return
+
+    for item in source:
+        if item.lower().startswith("authorization="):
+            target.append(item)
+            break
+
+
+def _infer_stack_id() -> str | None:
+    """Thử suy ra stack slug của Grafana Cloud từ biến môi trường."""
+
+    explicit_stack = os.environ.get("OTEL_GRAFANA_STACK_ID") or os.environ.get(
+        "GRAFANA_STACK_SLUG"
+    )
+    if explicit_stack and explicit_stack.strip():
+        return explicit_stack.strip()
+
+    # Render luôn đặt RENDER_EXTERNAL_HOSTNAME = "<service>.onrender.com".
+    hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME") or os.environ.get(
+        "RENDER_EXTERNAL_URL"
+    )
+    if not hostname:
+        return None
+
+    # Nếu là URL đầy đủ thì bỏ phần giao thức.
+    hostname = hostname.split("//", 1)[-1]
+    slug = hostname.split(".", 1)[0]
+    return slug.strip() if slug else None
+
+
+def _scope_headers_from_authorization(headers: list[str]) -> list[str]:
+    """Derive Grafana scope headers from the OTLP Authorization header."""
+
+    for header in headers:
+        key, _, value = header.partition("=")
+        if key.lower() != "authorization":
+            continue
+
+        auth_value = value.strip()
+        if not auth_value.lower().startswith("basic "):
+            continue
+
+        encoded_credentials = auth_value[6:].strip()
+        try:
+            decoded = base64.b64decode(encoded_credentials).decode()
+        except (ValueError, UnicodeDecodeError):
+            continue
+
+        username, _, _ = decoded.partition(":")
+        if not username.startswith("glc_"):
+            continue
+
+        grafana_meta = username[4:]
+        padded_meta = grafana_meta + "=" * (-len(grafana_meta) % 4)
+        try:
+            meta_payload = base64.b64decode(padded_meta).decode()
+            meta = json.loads(meta_payload)
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+
+        candidate = str(meta.get("o", "")).strip()
+        if not candidate:
+            continue
+
+        return [
+            f"X-Scope-OrgID={candidate}",
+            f"X-Grafana-Org-Id={candidate}",
+        ]
+
+    return []
+
+
+def _ensure_grafana_scope_header() -> None:
+    """Append Grafana Cloud scope header when missing.
+
+    Render chỉ cho phép thiết lập biến môi trường dạng chuỗi. Người dùng
+    thường cài `OTEL_EXPORTER_OTLP_HEADERS` với token nhưng bỏ quên header
+    `X-Scope-OrgID`. Thiếu header này Grafana không biết stack nào để gán
+    traces nên trả về lỗi 401 như thông báo "legacy auth cannot be upgraded".
+
+    Nếu phát hiện biến `OTEL_GRAFANA_STACK_ID` (hoặc fallback
+    `GRAFANA_STACK_SLUG`) thì tự động nối thêm header còn thiếu trước khi
+    khởi tạo exporter. Cơ chế này không ghi đè những cấu hình đã có sẵn.
+    """
+
+    headers_raw = os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "")
+    header_items = [
+        _normalise_header_encoding(item.strip())
+        for item in headers_raw.split(",")
+        if item.strip()
+    ]
+
+    traces_headers_raw = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+    traces_headers_defined = bool(traces_headers_raw and traces_headers_raw.strip())
+    traces_header_items = []
+    if traces_headers_defined:
+        traces_header_items = [
+            _normalise_header_encoding(item.strip())
+            for item in traces_headers_raw.split(",")
+            if item.strip()
+        ]
+
+    scope_headers = []
+    for candidate in header_items + traces_header_items:
+        clower = candidate.lower()
+        if clower.startswith("x-scope-orgid=") or clower.startswith(
+            "x-grafana-org-id="
+        ) or clower.startswith("x-org-id="):
+            scope_headers.append(candidate)
+
+    if not scope_headers:
+        stack_id = _infer_stack_id()
+        scope_source = "env"
+        if stack_id:
+            scope_headers = [
+                f"X-Scope-OrgID={stack_id}",
+                f"X-Grafana-Org-Id={stack_id}",
+            ]
+        else:
+            scope_headers = _scope_headers_from_authorization(
+                header_items + traces_header_items
+            )
+            scope_source = "authorization"
+
+        if not scope_headers:
+            logger.warning(
+                "Chưa thể tự suy ra Grafana stack slug. Vui lòng đặt biến"
+                " OTEL_GRAFANA_STACK_ID hoặc GRAFANA_STACK_SLUG."
+            )
+            return
+
+        if scope_source == "env":
+            logger.info(
+                "Đã tự động bổ sung các header Grafana scope (%s) cho OTLP exporter",
+                ", ".join(scope_headers),
+            )
+        else:
+            logger.info(
+                "Đã suy ra Grafana org ID từ Authorization và bổ sung header (%s)",
+                ", ".join(scope_headers),
+            )
+
+    if not _has_scope_header(header_items):
+        header_items.extend(scope_headers)
+    if traces_headers_defined:
+        if not _has_scope_header(traces_header_items):
+            traces_header_items.extend(scope_headers)
+        _ensure_authorization_header(header_items, traces_header_items)
+        _ensure_authorization_header(traces_header_items, header_items)
+        _ensure_env_header("OTEL_EXPORTER_OTLP_TRACES_HEADERS", traces_header_items)
+    elif traces_headers_raw is not None and not traces_headers_raw.strip():
+        # Nếu biến tồn tại nhưng rỗng, loại bỏ để exporter dùng chung cấu hình tổng quát.
+        os.environ.pop("OTEL_EXPORTER_OTLP_TRACES_HEADERS", None)
+
+    if not _has_authorization(header_items):
+        logger.warning(
+            "Không tìm thấy header Authorization trong OTEL_EXPORTER_OTLP_HEADERS. "
+            "Grafana sẽ trả về 401 nếu thiếu thông tin xác thực."
+        )
+    _ensure_env_header("OTEL_EXPORTER_OTLP_HEADERS", header_items)
+
+
+_ensure_grafana_scope_header()
+
+if logger.isEnabledFor(logging.DEBUG):
+    logger.debug(
+        "OTLP headers hiện tại: %s",
+        os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "(trống)"),
+    )
+    logger.debug(
+        "OTLP trace headers hiện tại: %s",
+        os.environ.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "(trống)"),
+    )
+
 otlp_exporter = OTLPSpanExporter()
 
 # 3. Gắn exporter vào provider
@@ -199,7 +456,7 @@ trace.set_tracer_provider(provider)
 app = FastAPI(title="Plant Disease Detection API", version="1.0.0")
 
 # --- (ĐÃ THÊM) Gắn OpenTelemetry vào ứng dụng FastAPI ---
-FastAPIInstrumentor.instrument_app(app)
+FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
 
 
 app.add_middleware(
