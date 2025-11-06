@@ -18,6 +18,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from urllib.parse import unquote
 # Note: recommendation text is not returned by the API per request.
 
 
@@ -225,6 +226,19 @@ def _unique_headers(headers: list[str]) -> list[str]:
     return deduped
 
 
+def _normalise_header_encoding(header: str) -> str:
+    """Decode any phần trăm-encoding trong giá trị header."""
+
+    if "=" not in header:
+        return header
+
+    key, value = header.split("=", 1)
+    if "%" not in value:
+        return header
+
+    return f"{key}={unquote(value)}"
+
+
 def _ensure_env_header(var_name: str, headers: list[str]) -> None:
     """Ghi lại danh sách header vào biến môi trường cụ thể."""
 
@@ -267,11 +281,17 @@ def _ensure_grafana_scope_header() -> None:
     """
 
     headers_raw = os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "")
-    header_items = [item.strip() for item in headers_raw.split(",") if item.strip()]
+    header_items = [
+        _normalise_header_encoding(item.strip())
+        for item in headers_raw.split(",")
+        if item.strip()
+    ]
 
     traces_headers_raw = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
     traces_header_items = [
-        item.strip() for item in traces_headers_raw.split(",") if item.strip()
+        _normalise_header_encoding(item.strip())
+        for item in traces_headers_raw.split(",")
+        if item.strip()
     ]
 
     if _has_scope_header(header_items) or _has_scope_header(traces_header_items):
@@ -318,6 +338,16 @@ def _ensure_grafana_scope_header() -> None:
 
 
 _ensure_grafana_scope_header()
+
+if logger.isEnabledFor(logging.DEBUG):
+    logger.debug(
+        "OTLP headers hiện tại: %s",
+        os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "(trống)"),
+    )
+    logger.debug(
+        "OTLP trace headers hiện tại: %s",
+        os.environ.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "(trống)"),
+    )
 
 otlp_exporter = OTLPSpanExporter()
 
