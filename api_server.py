@@ -90,11 +90,11 @@ def predict(image_array: np.ndarray, *, plant: str | None = None) -> dict:
     """Run inference and format the response payload.
 
     Changes made per request:
-    - Only return result when reported confidence > 0.80 (80%).
+    - Only return result when reported confidence > 0.65 (65%).
     - Do not include recommendation_markdown in the response.
     - Split label into `plant` and `disease` fields.
     """
-    THRESHOLD = 0.80
+    THRESHOLD = 0.65
 
     model = load_model()
     preds = model.predict(image_array)
