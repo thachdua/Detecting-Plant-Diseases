@@ -1,4 +1,3 @@
-import pytest
 from streamlit.testing.v1 import AppTest
 import pandas as pd
 import os
